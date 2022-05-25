@@ -51,7 +51,9 @@ def create_video_fragments(video, splits):
 
 
 def create_shared_project(project, url):
-    r = requests.post(url, json=project.json())
+    r = requests.post(
+        url, data=project.json(), headers={"Content-Type": "application/json"}
+    )
     r.raise_for_status()
 
     return r.json()
@@ -206,11 +208,11 @@ if __name__ == "__main__":
         upload_url = urljoin(args.upload_url, VPS_ENDPOINT)
 
     for i, v in enumerate(via_annotations, start=1):
-        output_filename = f"{i}.json"
+        output_filename = f"output/{i}.json"
         if upload_url:
             try:
                 response = create_shared_project(v, upload_url)
-                output_filename = f'{response["pid"]}.json'
+                output_filename = f'output/{response["pid"]}.json'
             except Exception as e:
                 print(f"Shared project creation failed ({i})", e)
 
