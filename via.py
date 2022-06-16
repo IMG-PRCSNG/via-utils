@@ -59,28 +59,56 @@ def create_shared_project(project, url):
     return r.json()
 
 
-def get_split_ts(captions, segments_per_split):
+def get_split_ts(captions, subtitle_captions, segments_per_split):
 
     split_ts = []
-    num_splits = (len(captions) + segments_per_split - 1) // segments_per_split
+    if subtitle_captions is None:
+        num_splits = (len(captions) + segments_per_split - 1) // segments_per_split
+    else: 
+        num_splits = (len(subtitle_captions) + segments_per_split - 1) // segments_per_split
+    
+    ## ensure that there is no overlap between last caption of previous segment and first caption of next segment
+    done_caption_max_index = -1
     for i in range(num_splits):
         ostart = i * segments_per_split
         oend = (i + 1) * segments_per_split
 
-        _segment = captions[ostart:oend]
+        ### split subtitle captions rather than captions
+        ### then find the closest times in the captions
+        if subtitle_captions: 
+            _segment_caption = subtitle_captions[ostart:oend]
+            start_times = [c.start_in_seconds for c in captions]
+            closest_start_index = min(range(len(start_times)), key=lambda x: abs(start_times[x]-_segment_caption[0].start_in_seconds))
+            closest_start_index = max(closest_start_index, done_caption_max_index+1)
+            closest_start_time = start_times[closest_start_index]
 
-        tstart = round(_segment[0].start_in_seconds, 3)
-        tend = round(_segment[-1].end_in_seconds, 3)
+            end_times = [c.end_in_seconds for c in captions]
+            closest_end_index = min(range(len(end_times)), key=lambda x: abs(start_times[x]-_segment_caption[-1].end_in_seconds))
+            assert closest_end_index >= closest_start_index
+            closest_end_time = end_times[closest_end_index]
+
+            done_caption_max_index = closest_end_index
+
+            _segment = [closest_start_time, closest_end_time]
+        else: 
+            _segment = captions[ostart:oend]
+            _segment = [_segment[0].start_in_seconds, _segment[-1].end_in_seconds]
+
+        tstart = round(_segment[0], 3)
+        tend = round(_segment[1], 3)
 
         split_ts.append([tstart, tend])
 
     return split_ts
 
 
-def get_via_subtitle_project(video: str, captions, segments_per_split=-1):
+def get_via_subtitle_project(video: str, captions, subtitle_captions, segments_per_split=-1):
 
     if segments_per_split == -1:
-        segments_per_split = len(captions)
+        if subtitle_captions is None: 
+            segments_per_split = len(captions) 
+        else:
+            segments_per_split = len(subtitle_captions)
 
     # Config
     via_config = VIA_CONFIG()
@@ -109,9 +137,9 @@ def get_via_subtitle_project(video: str, captions, segments_per_split=-1):
     fname, *_ = fname.split("#", 1)
 
     # Get video fragments
-    splits = get_split_ts(captions, segments_per_split)
+    splits = get_split_ts(captions, subtitle_captions, segments_per_split)
     video_fragments = create_video_fragments(video, splits)
-
+    
     # Create file splits
     via_file_splits = [
         {
@@ -177,7 +205,7 @@ if __name__ == "__main__":
         "--num-segments-in-split",
         type=int,
         default=-1,
-        help="Number of segments in each split",
+        help="Number of segments in each split. If a subtitle vtt file is given, this is the number of subtitles. Else, this is the number of vtt segments.",
     )
     group.add_argument(
         "--num-splits", type=int, default=1, help="Number of splits to make"
@@ -188,6 +216,8 @@ if __name__ == "__main__":
     #     "--splits", nargs="+", default=[], help="timestamps to split the project at"
     # )
 
+    parser.add_argument("--subtitle-vtt", type=str, default=None, help="Subtitle WebVTT file to enforce better splits of the vtt file")
+
     # Upload to VPS
     parser.add_argument("--upload-url", help="VPS URL to upload projects")
 
@@ -195,13 +225,21 @@ if __name__ == "__main__":
 
     # Read captions from webvtt
     captions = webvtt.read(args.vtt)
+    if args.subtitle_vtt is not None:
+        subtitle_captions = webvtt.read(args.subtitle_vtt)
+    else: 
+        subtitle_captions = None
 
-    n_segments = args.num_segments_in_split
-    if args.num_splits:
-        n_segments = len(captions) // args.num_splits
+    if args.num_segments_in_split > 1: ## if given num_segments_in_split, use this value
+        n_segments = args.num_segments_in_split
+    else: ## otherwise use argument num_splits
+        if subtitle_captions is None: 
+            n_segments = len(captions) // args.num_splits
+        else: 
+            n_segments = len(subtitle_captions) // args.num_splits
 
     # Create VIA Project
-    via_annotations = get_via_subtitle_project(args.video, captions, n_segments)
+    via_annotations = get_via_subtitle_project(args.video, captions, subtitle_captions, n_segments)
 
     upload_url = None
     if args.upload_url:
