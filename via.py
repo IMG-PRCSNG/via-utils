@@ -1,4 +1,7 @@
+from datetime import datetime
+from pathlib import Path
 import random
+import shutil
 import string
 from typing import List
 from urllib.parse import urljoin
@@ -64,9 +67,11 @@ def get_split_ts(captions, subtitle_captions, segments_per_split):
     split_ts = []
     if subtitle_captions is None:
         num_splits = (len(captions) + segments_per_split - 1) // segments_per_split
-    else: 
-        num_splits = (len(subtitle_captions) + segments_per_split - 1) // segments_per_split
-    
+    else:
+        num_splits = (
+            len(subtitle_captions) + segments_per_split - 1
+        ) // segments_per_split
+
     ## ensure that there is no overlap between last caption of previous segment and first caption of next segment
     done_caption_max_index = -1
     for i in range(num_splits):
@@ -75,22 +80,30 @@ def get_split_ts(captions, subtitle_captions, segments_per_split):
 
         ### split subtitle captions rather than captions
         ### then find the closest times in the captions
-        if subtitle_captions: 
+        if subtitle_captions:
             _segment_caption = subtitle_captions[ostart:oend]
             start_times = [c.start_in_seconds for c in captions]
-            closest_start_index = min(range(len(start_times)), key=lambda x: abs(start_times[x]-_segment_caption[0].start_in_seconds))
-            closest_start_index = max(closest_start_index, done_caption_max_index+1)
+            closest_start_index = min(
+                range(len(start_times)),
+                key=lambda x: abs(
+                    start_times[x] - _segment_caption[0].start_in_seconds
+                ),
+            )
+            closest_start_index = max(closest_start_index, done_caption_max_index + 1)
             closest_start_time = start_times[closest_start_index]
 
             end_times = [c.end_in_seconds for c in captions]
-            closest_end_index = min(range(len(end_times)), key=lambda x: abs(start_times[x]-_segment_caption[-1].end_in_seconds))
+            closest_end_index = min(
+                range(len(end_times)),
+                key=lambda x: abs(start_times[x] - _segment_caption[-1].end_in_seconds),
+            )
             assert closest_end_index >= closest_start_index
             closest_end_time = end_times[closest_end_index]
 
             done_caption_max_index = closest_end_index
 
             _segment = [closest_start_time, closest_end_time]
-        else: 
+        else:
             _segment = captions[ostart:oend]
             _segment = [_segment[0].start_in_seconds, _segment[-1].end_in_seconds]
 
@@ -102,11 +115,13 @@ def get_split_ts(captions, subtitle_captions, segments_per_split):
     return split_ts
 
 
-def get_via_subtitle_project(video: str, captions, subtitle_captions, segments_per_split=-1):
+def get_via_subtitle_project(
+    video: str, captions, subtitle_captions, segments_per_split=-1
+):
 
     if segments_per_split == -1:
-        if subtitle_captions is None: 
-            segments_per_split = len(captions) 
+        if subtitle_captions is None:
+            segments_per_split = len(captions)
         else:
             segments_per_split = len(subtitle_captions)
 
@@ -139,7 +154,7 @@ def get_via_subtitle_project(video: str, captions, subtitle_captions, segments_p
     # Get video fragments
     splits = get_split_ts(captions, subtitle_captions, segments_per_split)
     video_fragments = create_video_fragments(video, splits)
-    
+
     # Create file splits
     via_file_splits = [
         {
@@ -216,7 +231,12 @@ if __name__ == "__main__":
     #     "--splits", nargs="+", default=[], help="timestamps to split the project at"
     # )
 
-    parser.add_argument("--subtitle-vtt", type=str, default=None, help="Subtitle WebVTT file to enforce better splits of the vtt file")
+    parser.add_argument(
+        "--subtitle-vtt",
+        type=str,
+        default=None,
+        help="Subtitle WebVTT file to enforce better splits of the vtt file",
+    )
 
     # Upload to VPS
     parser.add_argument("--upload-url", help="VPS URL to upload projects")
@@ -227,30 +247,56 @@ if __name__ == "__main__":
     captions = webvtt.read(args.vtt)
     if args.subtitle_vtt is not None:
         subtitle_captions = webvtt.read(args.subtitle_vtt)
-    else: 
+    else:
         subtitle_captions = None
 
-    if args.num_segments_in_split > 1: ## if given num_segments_in_split, use this value
+    if args.num_segments_in_split > 1:
+        ## if given num_segments_in_split, use this value
         n_segments = args.num_segments_in_split
-    else: ## otherwise use argument num_splits
-        if subtitle_captions is None: 
-            n_segments = len(captions) // args.num_splits
-        else: 
-            n_segments = len(subtitle_captions) // args.num_splits
+    else:
+        ## otherwise use argument num_splits
+        if subtitle_captions is None:
+            n_segments = (len(captions) + args.num_splits - 1) // args.num_splits
+        else:
+            n_segments = (
+                len(subtitle_captions) + args.num_splits - 1
+            ) // args.num_splits
 
     # Create VIA Project
-    via_annotations = get_via_subtitle_project(args.video, captions, subtitle_captions, n_segments)
+    via_annotations = get_via_subtitle_project(
+        args.video, captions, subtitle_captions, n_segments
+    )
 
     upload_url = None
     if args.upload_url:
         upload_url = urljoin(args.upload_url, VPS_ENDPOINT)
 
+    video_name = args.video.rsplit("/", 1)[-1]
+    video_name = video_name.rsplit(".", 1)[0]
+
+    OUTPUT_DIR = Path("output") / video_name
+    try:
+        OUTPUT_DIR.mkdir()
+    except FileExistsError:
+        timestamp = datetime.now().replace(microsecond=0)
+
+        BACKUP_DIR = Path("output") / "backups" / video_name / timestamp.isoformat()
+        BACKUP_DIR.mkdir(parents=True)
+
+        print(
+            f"{OUTPUT_DIR} already exists. Moving contents to backups directory - {BACKUP_DIR}"
+        )
+
+        shutil.copytree(
+            OUTPUT_DIR, BACKUP_DIR, copy_function=shutil.move, dirs_exist_ok=True
+        )
+
     for i, v in enumerate(via_annotations, start=1):
-        output_filename = f"output/{i}.json"
+        output_filename = f"{OUTPUT_DIR}/{i}.json"
         if upload_url:
             try:
                 response = create_shared_project(v, upload_url)
-                output_filename = f'output/{response["pid"]}.json'
+                output_filename = f'{OUTPUT_DIR}/{response["pid"]}.json'
             except Exception as e:
                 print(f"Shared project creation failed ({i})", e)
 
